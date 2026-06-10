@@ -8,7 +8,7 @@ fn main() {
     println!("Hello, world!");
     let data: Bencodable = Bencodable::Dict(BTreeMap::from([
         ("hello".to_owned(), Bencodable::String("world".to_owned())),
-        ("foo".to_owned(), Bencodable::Int(42))
+        ("foo".to_owned(), Bencodable::Number(42))
     ]));
     let encoded = data.encode();
     println!("{}", encoded);
