@@ -1,15 +1,9 @@
 mod lib;
+use std::fs;
 
-use std::collections::BTreeMap;
-
-use lib::bencoding::Bencodable;
+use crate::lib::bencoding;
 
 fn main() {
-    println!("Hello, world!");
-    let data: Bencodable = Bencodable::Dict(BTreeMap::from([
-        ("hello".to_owned(), Bencodable::String("world".to_owned())),
-        ("foo".to_owned(), Bencodable::Number(42))
-    ]));
-    let encoded = data.encode();
-    println!("{}", encoded);
+    let bytes: Vec<u8> = fs::read("test.torrent").unwrap();
+    let _ = bencoding::Bencodable::decode(bytes).unwrap();
 }

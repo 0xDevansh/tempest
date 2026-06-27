@@ -1,13 +1,11 @@
-use std::{collections::BTreeMap, range};
-
-use crate::lib::bencoding::Token::{DictBegin, ListBegin, Number};
+use std::{collections::BTreeMap};
+use bstr::{BString};
 
 /// Representation of a value that can be bencoded
-#[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Bencodable {
     Number (i32),
-    String(String),
+    String(BString),
     List(Vec<Bencodable>),
     Dict(BTreeMap<String, Bencodable>)
 }
@@ -23,7 +21,7 @@ pub enum Token {
     End,
     /// any number
     Number(i32),
-    String(String)
+    String(BString)
 }
 
 #[derive(Debug)]
@@ -32,12 +30,12 @@ pub enum ParsingError {
 }
 pub type TokenizeResult = Result<Token, ParsingError>;
 
-fn tokenize_int(chars: &Vec<char>, index: &mut usize) -> TokenizeResult {
-    if chars[*index] == 'i' {
+fn tokenize_int(chars: &Vec<u8>, index: &mut usize) -> TokenizeResult {
+    if chars[*index] == b'i' {
         *index += 1;
     }
     let res = tokenize_general_number(chars, index);
-    if chars[*index] == 'e' {
+    if chars[*index] == b'e' {
         *index += 1;
     } else {
         return Err(ParsingError::InvalidInput);
@@ -45,54 +43,59 @@ fn tokenize_int(chars: &Vec<char>, index: &mut usize) -> TokenizeResult {
     res.map(|n| Token::Number(n))
 }
 
-fn tokenize_general_number(chars: &Vec<char>, index: &mut usize) -> Result<i32, ParsingError> {
-    if !(chars[*index].is_ascii_digit() || chars[*index] == '-') {
+fn tokenize_general_number(chars: &Vec<u8>, index: &mut usize) -> Result<i32, ParsingError> {
+    if !(chars[*index].is_ascii_digit() || chars[*index] == '-' as u8) {
         return Err(ParsingError::InvalidInput);
     }
-    let mut to_parse = String::new();
+    let mut to_parse = BString::new(vec![]);
     
     while chars[*index].is_ascii_digit() {
         to_parse.push(chars[*index]);
         *index += 1;
     }
-    match to_parse.parse() {
+    match to_parse.to_string().parse() {
         Ok(num) => Ok(num),
         _ => Err(ParsingError::InvalidInput)
     }
 }
 
-fn tokenize_string(chars: &Vec<char>, index: &mut usize) -> TokenizeResult {
+fn tokenize_string(chars: &Vec<u8>, index: &mut usize) -> TokenizeResult {
     if !chars[*index].is_ascii_digit() {
         return Err(ParsingError::InvalidInput);
     }
     let length: usize = tokenize_general_number(chars, index)?.try_into().map_err(|_| ParsingError::InvalidInput)?;
-    if chars[*index] == ':' {
+    if chars[*index] == ':' as u8 {
         *index += 1;
     } else {
         return Err(ParsingError::InvalidInput);
     }
-    let s: String = chars[*index..(*index + length)].iter().collect();
+    let s = BString::from(chars[*index..(*index + length)].iter().map(|x| x.clone()).collect::<Vec<u8>>());
     *index += length;
 
     return Ok(Token::String(s));
 }
 
-fn tokenize_next(chars: &Vec<char>, index: &mut usize) -> TokenizeResult {
+const L: u8 = 'l' as u8;
+const D: u8 = 'd' as u8;
+const E: u8 = 'e' as u8;
+const I: u8 = 'i' as u8;
+
+fn tokenize_next(chars: &Vec<u8>, index: &mut usize) -> TokenizeResult {
     let c = chars[*index];
     match c {
-        'l' => {
+        L => {
             *index += 1;
             Ok(Token::ListBegin)
         }
-        'd' => {
+        D => {
             *index += 1;
             Ok(Token::DictBegin)
         }
-        'e' => {
+        E => {
             *index += 1;
             Ok(Token::End)
         }
-        'i' => {
+        I => {
             tokenize_int(chars, index)
         }
         _ => {
@@ -104,8 +107,7 @@ fn tokenize_next(chars: &Vec<char>, index: &mut usize) -> TokenizeResult {
     }
 }
 
-fn tokenize(encoded: String) -> Result<Vec<Token>, ParsingError> {
-    let chars: Vec<char> = encoded.chars().collect();
+fn tokenize(chars: Vec<u8>) -> Result<Vec<Token>, ParsingError> {
     let mut idx: usize = 0;
     let mut tokens = vec![];
     while idx < chars.len() {
@@ -116,20 +118,25 @@ fn tokenize(encoded: String) -> Result<Vec<Token>, ParsingError> {
 
 fn parse(tokens: &Vec<Token>, index: &mut usize) -> Result<Bencodable, ParsingError> {
     match &tokens[*index] {
-        Token::Number(num) => Ok(Bencodable::Number(*num)),
-        Token::String(s) => Ok(Bencodable::String(s.clone())),
+        Token::Number(num) => {
+            *index += 1;
+            Ok(Bencodable::Number(*num))
+        },
+        Token::String(s) => {
+            *index +=1 ;
+            Ok(Bencodable::String(s.clone()))
+        },
         Token::DictBegin => {
             *index += 1;
             let mut map: BTreeMap<String, Bencodable> = BTreeMap::new();
             while tokens[*index] != Token::End {
                 let key = if let Token::String(s) = &tokens[*index] {
-                    s.clone()
+                    *index += 1;
+                    s.to_string()
                 } else {
                     return Err(ParsingError::InvalidInput);
                 };
-                *index += 1;
                 let value = parse(tokens, index)?;
-                *index += 1;
                 map.insert(key, value);
             }
             *index += 1;
@@ -141,7 +148,7 @@ fn parse(tokens: &Vec<Token>, index: &mut usize) -> Result<Bencodable, ParsingEr
             let mut list: Vec<Bencodable> = vec![];
             while *index < tokens.len() && tokens[*index] != Token::End {
                 let value = parse(tokens, index)?;
-                *index += 1;
+                //*index += 1;
                 list.push(value);
             }
             *index += 1;
@@ -172,7 +179,7 @@ impl Bencodable {
         }
     }
 
-    pub fn decode(encoded: String) -> Result<Bencodable, ParsingError> {
+    pub fn decode(encoded: Vec<u8>) -> Result<Bencodable, ParsingError> {
         let tokens = tokenize(encoded)?;
         let mut index: usize = 0;
         Ok(parse(&tokens, &mut index)?)
@@ -181,13 +188,15 @@ impl Bencodable {
 
 #[cfg(test)]
 mod tests {
+use bstr::BStr;
+
 use super::*;
 
     #[test]
     fn test_tokenize_int_pass() {
         let inp = "i23e";
         let mut idx = 0;
-        let res = tokenize_int(&inp.chars().collect(), &mut idx);
+        let res = tokenize_int(&inp.bytes().collect(), &mut idx);
         assert_eq!(res.is_ok(), true);
         assert_eq!(idx, 4);
         assert_eq!(res.unwrap(), Token::Number(23));
@@ -197,35 +206,35 @@ use super::*;
     fn test_tokenize_str_pass() {
         let inp = "5:hellooo";
         let mut idx = 0;
-        let res = tokenize_string(&inp.chars().collect(), &mut idx);
+        let res = tokenize_string(&inp.bytes().collect(), &mut idx);
         assert_eq!(res.is_ok(), true);
-        assert_eq!(res.unwrap(), Token::String("hello".to_owned()));
+        assert_eq!(res.unwrap(), Token::String("hello".into()));
     }
 
     #[test]
     fn test_tokenize_empty() {
-        let res = tokenize("".to_string());
+        let res = tokenize("".into());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), vec![]);
     }
 
     #[test]
     fn test_tokenize_number() {
-        let res = tokenize("i42e".to_string());
+        let res = tokenize("i42e".into());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), vec![Token::Number(42)]);
     }
 
     #[test]
     fn test_tokenize_string() {
-        let res = tokenize("5:hello".to_string());
+        let res = tokenize("5:hello".into());
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), vec![Token::String("hello".to_owned())]);
+        assert_eq!(res.unwrap(), vec![Token::String("hello".into())]);
     }
 
     #[test]
     fn test_tokenize_list() {
-        let res = tokenize("li1ei2ee".to_string());
+        let res = tokenize("li1ei2ee".into());
         assert!(res.is_ok());
         assert_eq!(
             res.unwrap(),
@@ -240,13 +249,13 @@ use super::*;
 
     #[test]
     fn test_tokenize_dict() {
-        let res = tokenize("d3:fooi42ee".to_string());
+        let res = tokenize("d3:fooi42ee".into());
         assert!(res.is_ok());
         assert_eq!(
             res.unwrap(),
             vec![
                 Token::DictBegin,
-                Token::String("foo".to_owned()),
+                Token::String(BString::from("foo")),
                 Token::Number(42),
                 Token::End
             ]
@@ -255,7 +264,7 @@ use super::*;
 
     #[test]
     fn test_tokenize_nested_list() {
-        let res = tokenize("lli1eeli2eee".to_string());
+        let res = tokenize(BString::from("lli1eeli2eee").to_vec());
         assert!(res.is_ok());
         assert_eq!(
             res.unwrap(),
@@ -273,8 +282,45 @@ use super::*;
     }
 
     #[test]
+    fn test_tokenize_nested_list_2() {
+        let res = tokenize(BString::from("ll40:udp://tracker.leechers-paradise.org:6969el34:udp://tracker.coppersurfer.tk:6969el33:udp://tracker.opentrackr.org:1337el23:udp://explodie.org:6969el31:udp://tracker.empire-js.us:1337el26:wss://tracker.btorrent.xyzel32:wss://tracker.openwebtorrent.comel25:wss://tracker.fastcast.nzee").to_vec());
+        assert!(res.is_ok());
+        assert_eq!(
+            res.unwrap(),
+            vec![
+                Token::ListBegin,
+                Token::ListBegin,
+                Token::String("udp://tracker.leechers-paradise.org:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.coppersurfer.tk:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.opentrackr.org:1337".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://explodie.org:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.empire-js.us:1337".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.btorrent.xyz".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.openwebtorrent.com".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.fastcast.nz".into()),
+                Token::End,
+                Token::End
+            ]
+        );
+    }
+
+    #[test]
     fn test_tokenize_invalid() {
-        let res = tokenize("x".to_string());
+        let res = tokenize(BString::from("x").to_vec());
         assert!(res.is_err());
     }
 
@@ -285,17 +331,17 @@ use super::*;
         let res = parse(&tokens, &mut idx);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), Bencodable::Number(42));
-        assert_eq!(idx, 0);
+        assert_eq!(idx, 1);
     }
 
     #[test]
     fn test_parse_string() {
-        let tokens = vec![Token::String("hello".to_owned())];
+        let tokens = vec![Token::String("hello".into())];
         let mut idx = 0;
         let res = parse(&tokens, &mut idx);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), Bencodable::String("hello".to_owned()));
-        assert_eq!(idx, 0);
+        assert_eq!(res.unwrap(), Bencodable::String("hello".into()));
+        assert_eq!(idx, 1);
     }
 
     #[test]
@@ -316,10 +362,49 @@ use super::*;
     }
 
     #[test]
+    fn test_parse_list_2() {
+        let tokens = vec![
+                Token::ListBegin,
+                Token::ListBegin,
+                Token::String("udp://tracker.leechers-paradise.org:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.coppersurfer.tk:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.opentrackr.org:1337".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://explodie.org:6969".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("udp://tracker.empire-js.us:1337".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.btorrent.xyz".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.openwebtorrent.com".into()),
+                Token::End,
+                Token::ListBegin,
+                Token::String("wss://tracker.fastcast.nz".into()),
+                Token::End,
+                Token::End
+            ];
+        let mut idx = 0;
+        let res = parse(&tokens, &mut idx);
+        assert!(res.is_ok());
+        assert_eq!(
+            res.unwrap(),
+            Bencodable::List(vec![Bencodable::List(vec![Bencodable::String("udp://tracker.leechers-paradise.org:6969".into())]), Bencodable::List(vec![Bencodable::String("udp://tracker.coppersurfer.tk:6969".into())]), Bencodable::List(vec![Bencodable::String("udp://tracker.opentrackr.org:1337".into())]), Bencodable::List(vec![Bencodable::String("udp://explodie.org:6969".into())]), Bencodable::List(vec![Bencodable::String("udp://tracker.empire-js.us:1337".into())]), Bencodable::List(vec![Bencodable::String("wss://tracker.btorrent.xyz".into())]), Bencodable::List(vec![Bencodable::String("wss://tracker.openwebtorrent.com".into())]), Bencodable::List(vec![Bencodable::String("wss://tracker.fastcast.nz".into())])])
+        );
+    }
+
+    #[test]
     fn test_parse_dict() {
         let tokens = vec![
             Token::DictBegin,
-            Token::String("key".to_owned()),
+            Token::String("key".into()),
             Token::Number(42),
             Token::End,
         ];
