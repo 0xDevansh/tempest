@@ -1,17 +1,17 @@
-use std::{collections::BTreeMap};
-use bstr::{BString};
+use std::collections::BTreeMap;
+
+use bstr::BString;
 
 /// Representation of a value that can be bencoded
 #[derive(PartialEq, Debug)]
 pub enum Bencodable {
-    Number (i32),
+    Number(i64),
     String(BString),
     List(Vec<Bencodable>),
-    Dict(BTreeMap<String, Bencodable>)
+    Dict(BTreeMap<String, Bencodable>),
 }
 
-#[derive(PartialEq)]
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 pub enum Token {
     /// `l`
     ListBegin,
@@ -20,8 +20,8 @@ pub enum Token {
     /// `e`
     End,
     /// any number
-    Number(i32),
-    String(BString)
+    Number(i64),
+    String(BString),
 }
 
 #[derive(Debug)]
@@ -43,20 +43,26 @@ fn tokenize_int(chars: &Vec<u8>, index: &mut usize) -> TokenizeResult {
     res.map(|n| Token::Number(n))
 }
 
-fn tokenize_general_number(chars: &Vec<u8>, index: &mut usize) -> Result<i32, ParsingError> {
-    if !(chars[*index].is_ascii_digit() || chars[*index] == '-' as u8) {
+fn tokenize_general_number(chars: &Vec<u8>, index: &mut usize) -> Result<i64, ParsingError> {
+    if !(chars[*index].is_ascii_digit() || chars[*index] == b'-') {
         return Err(ParsingError::InvalidInput);
     }
     let mut to_parse = BString::new(vec![]);
-    
-    while chars[*index].is_ascii_digit() {
+    if chars[*index] == b'-' {
+        to_parse.push(b'-');
+        *index += 1;
+        if *index >= chars.len() || !chars[*index].is_ascii_digit() {
+            return Err(ParsingError::InvalidInput);
+        }
+    }
+    while *index < chars.len() && chars[*index].is_ascii_digit() {
         to_parse.push(chars[*index]);
         *index += 1;
     }
-    match to_parse.to_string().parse() {
-        Ok(num) => Ok(num),
-        _ => Err(ParsingError::InvalidInput)
-    }
+    to_parse
+        .to_string()
+        .parse()
+        .map_err(|_| ParsingError::InvalidInput)
 }
 
 fn tokenize_string(chars: &Vec<u8>, index: &mut usize) -> TokenizeResult {
@@ -173,7 +179,10 @@ impl Bencodable {
                 format!("l{}e", elements)
             },
             Bencodable::Dict(dict) => {
-                let elements = dict.iter().map(|(k, v)| format!("{}{}", k, v.encode())).fold(String::new(), |a, b| a + &b);
+                let elements = dict
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}{}", k.len(), k, v.encode()))
+                    .fold(String::new(), |a, b| a + &b);
                 format!("d{}e", elements)
             }
         }
@@ -184,12 +193,51 @@ impl Bencodable {
         let mut index: usize = 0;
         Ok(parse(&tokens, &mut index)?)
     }
+
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Bencodable::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Bencodable::String(s) => Some(s.as_ref()),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<String> {
+        match self {
+            Bencodable::String(s) => std::str::from_utf8(s.as_ref())
+                .ok()
+                .map(|s| s.to_owned()),
+            _ => None,
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&Vec<Bencodable>> {
+        match self {
+            Bencodable::List(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    pub fn as_dict(&self) -> Option<&BTreeMap<String, Bencodable>> {
+        match self {
+            Bencodable::Dict(dict) => Some(dict),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Bencodable> {
+        self.as_dict()?.get(key)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-use bstr::BStr;
-
 use super::*;
 
     #[test]
